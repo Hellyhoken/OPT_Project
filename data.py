@@ -134,7 +134,6 @@ suitability_color_map = {
 }
 
 def generate_suitability_data():
-
     suitability_dict = {
         'adaptation_atelerix': extract_markdown_table(atelerix_table_markdown),
         'adaptation_martes': extract_markdown_table(martes_table_markdown),

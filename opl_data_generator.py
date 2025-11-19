@@ -1,4 +1,6 @@
 from utils import *
+from data import generate_suitability_data
+
 print("Loading Menorca dataset...")
 dataset_gpd = load_menorca_data()
 print("Menorca dataset loaded.")
@@ -10,6 +12,8 @@ dataset_gpd = add_species_distance_column(dataset_gpd)
 print("Species distance columns added.")
 import json
 import os
+
+suitability_dict = generate_suitability_data()
 
 if not os.path.exists('opl_model_data.json'):
     # Prepare data dictionary
@@ -39,7 +43,7 @@ if not os.path.exists('opl_model_data.json'):
             if action == 'corridor':
                 continue
             # Using your predefined 'get_suitability_score' function here
-            score = get_suitability_score(action, land_cover)
+            score = get_suitability_score(action, land_cover, suitability_dict)
             suitability_scores[row['grid_id']][action] = score
     export_data['SuitabilityScores'] = suitability_scores
 
