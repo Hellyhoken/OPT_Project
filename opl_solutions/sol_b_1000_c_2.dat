@@ -1,10 +1,4 @@
-/*********************************************
- * OPL 22.1.1.0 Data
- * Author: olive
- * Creation Date: 19 Nov 2025 at 02:12:59
- *********************************************/
-
- // solution (deterministic time limit exceeded) with objective 193.589827333831
+// solution (deterministic time limit exceeded) with objective 193.589827333831
 // Quality Incumbent solution:
 // MIQP objective                                 1.9358982733e+02
 // MIQP solution norm |x| (Total, Max)            1.06500e+03  1.00000e+00
@@ -9865,4 +9859,3 @@ con = [[0 0 0 0]
              [0 0 0 0]
              [0 0 0 0]
              [0 0 0 0]];
- 

@@ -41,25 +41,25 @@ def add_species_distance_column(dataset_gpd):
         starting_points = dataset_gpd.loc[dataset_gpd[f"has_{species}"],'grid_id'].tolist()
         dataset_gpd[f"{short_spec}_distances"] = [[0 for _ in range(len(starting_points))] for _ in range(len(dataset_gpd))]
 
-    # For each starting population, perform a BFS to find distances to all other cells.
-    for i, source_grid_id in enumerate(starting_points):
-        queue = collections.deque([(source_grid_id, 0)]) # (grid_id, distance)
-        visited = set([source_grid_id])
+        # For each starting population, perform a BFS to find distances to all other cells.
+        for i, source_grid_id in enumerate(starting_points):
+            queue = collections.deque([(source_grid_id, 0)]) # (grid_id, distance)
+            visited = set([source_grid_id])
 
-        while queue:
-            current_grid_id, current_dist = queue.popleft()
+            while queue:
+                current_grid_id, current_dist = queue.popleft()
 
-            dataset_gpd.loc[dataset_gpd['grid_id'] == current_grid_id, f"{short_spec}_distances"].iloc[0][i] = current_dist
+                dataset_gpd.loc[dataset_gpd['grid_id'] == current_grid_id, f"{short_spec}_distances"].iloc[0][i] = current_dist
 
-            # Get neighbors of the current cell
-            current_row_idx = dataset_gpd[dataset_gpd['grid_id'] == current_grid_id].index[0]
-            neighbors = dataset_gpd.loc[current_row_idx, 'neighbors']
+                # Get neighbors of the current cell
+                current_row_idx = dataset_gpd[dataset_gpd['grid_id'] == current_grid_id].index[0]
+                neighbors = dataset_gpd.loc[current_row_idx, 'neighbors']
 
-            for neighbor_grid_id in neighbors:
-                if neighbor_grid_id not in visited:
-                    new_dist = current_dist + 1
-                    visited.add(neighbor_grid_id)
-                    queue.append((neighbor_grid_id, new_dist))
+                for neighbor_grid_id in neighbors:
+                    if neighbor_grid_id not in visited:
+                        new_dist = current_dist + 1
+                        visited.add(neighbor_grid_id)
+                        queue.append((neighbor_grid_id, new_dist))
     return dataset_gpd
 
 def get_suitability_color(land_cover_name, suitability_df):

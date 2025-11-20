@@ -1,228 +1,268 @@
-from utils import *
+"""
+OPL Solution Visualizer
+
+Interactive visualization tool for optimization solutions showing:
+- Solution map: Actions, corridors, and population origins
+- Connection map: Species connections and corridors with origin arrows
+
+This script loads OPL data and solution files, then generates interactive
+HTML maps with hover interactions.
+"""
+
 import os
-import re
+import geopandas as gpd
 
-print("Loading Menorca dataset...")
-dataset_gpd = load_menorca_data()
-print("Menorca dataset loaded.")
+from opl_parser import (
+    parse_opl_set, parse_opl_1d_array, parse_opl_2d_array, 
+    parse_opl_3d_array, parse_opl_array_of_sets, load_opl_file
+)
+from visualization import (
+    create_base_map, determine_solution_cell_color, 
+    determine_connection_cell_color, build_solution_tooltip,
+    build_connection_tooltip, add_cell_to_map, add_connection_arrows,
+    inject_hover_javascript, compute_centroids, SPECIES_FULL_NAMES
+)
+from file_utils import (
+    list_and_select_file, ensure_directory_exists,
+    get_species_origins_from_dataset, print_summary_statistics
+)
 
-# List all solution files in opl_solutions directory
-solution_dir = "opl_solutions"
-solution_files = [f for f in os.listdir(solution_dir) if f.endswith('.dat')]
 
-if not solution_files:
-    print("No solution files found in opl_solutions directory!")
-else:
-    print("\nAvailable solution files:")
-    for i, file in enumerate(solution_files, 1):
-        print(f"{i}. {file}")
+def load_menorca_dataset():
+    """Load the Menorca dataset for geometries and land cover."""
+    print("Loading Menorca dataset for geometry only...")
+    dataset_gpd = gpd.read_file(
+        "https://gitlab.com/drvicsana/opt-milp-project-2025/-/raw/main/datasets/dataset.geojson"
+    )
+    print("Dataset loaded.")
+    return dataset_gpd
+
+
+def load_and_parse_opl_data(opl_data_dir):
+    """
+    Load and parse OPL data file selected by user.
     
-    # User selection
-    while True:
-        try:
-            choice = int(input("\nEnter the number of the solution file to load: "))
-            if 1 <= choice <= len(solution_files):
-                selected_file = solution_files[choice - 1]
-                break
-            else:
-                print(f"Please enter a number between 1 and {len(solution_files)}")
-        except ValueError:
-            print("Please enter a valid number")
+    Returns:
+        tuple: (cells, species_list, neighbors_list, opl_data_filename)
+    """
+    selected_file = list_and_select_file(
+        opl_data_dir, 
+        extension='.dat',
+        prompt_message="Available OPL data files"
+    )
     
-    # Load the selected solution file
+    opl_data_path = os.path.join(opl_data_dir, selected_file)
+    print(f"\nLoading OPL data from: {selected_file}")
+    
+    content = load_opl_file(opl_data_path)
+    
+    cells = parse_opl_set(content, 'Cells')
+    species_list = parse_opl_set(content, 'Species')
+    neighbors_list = parse_opl_array_of_sets(content, 'Neighbors')
+    
+    print(f"Loaded {len(cells)} cells")
+    print(f"Species: {species_list}")
+    print(f"Neighbors: {len(neighbors_list) if neighbors_list else 0} cell neighbor lists")
+    
+    return cells, species_list, neighbors_list, selected_file
+
+
+def create_ordered_cells(cells, neighbors_list, dataset_gpd):
+    """
+    Create ordered cell list with geometries and metadata.
+    
+    Args:
+        cells (list): Cell IDs from OPL data
+        neighbors_list (list): Neighbor lists from OPL data
+        dataset_gpd (GeoDataFrame): Menorca dataset
+        
+    Returns:
+        list: Ordered cell dictionaries
+    """
+    # Create mappings
+    geometry_map = {row['grid_id']: row.geometry for _, row in dataset_gpd.iterrows()}
+    land_cover_map = {row['grid_id']: row['dominant_land_cover_name'] 
+                      for _, row in dataset_gpd.iterrows()}
+    
+    # Build ordered cells
+    ordered_cells = []
+    for i, cell_id in enumerate(cells):
+        if cell_id in geometry_map:
+            ordered_cells.append({
+                'grid_id': cell_id,
+                'geometry': geometry_map[cell_id],
+                'land_cover': land_cover_map.get(cell_id, 'Unknown'),
+                'neighbors': neighbors_list[i] if neighbors_list and i < len(neighbors_list) else []
+            })
+    
+    print(f"Matched {len(ordered_cells)} cells with geometries")
+    return ordered_cells
+
+
+def load_and_parse_solution(solution_dir):
+    """
+    Load and parse solution file selected by user.
+    
+    Returns:
+        tuple: (add_data, cor_data, con_data, con_o_data, solution_filename)
+    """
+    selected_file = list_and_select_file(
+        solution_dir,
+        extension='.dat',
+        prompt_message="Available solution files"
+    )
+    
     solution_path = os.path.join(solution_dir, selected_file)
     print(f"\nLoading solution from: {selected_file}")
     
-    with open(solution_path, 'r') as f:
-        content = f.read()
+    content = load_opl_file(solution_path)
     
-    # Parse the 'add' array from the solution file
-    # The 'add' array has format: add = [[row1] [row2] ... [rowN]]
-    # Each row has 4 values representing actions for 4 species
-    add_match = re.search(r'add = \[\[(.*?)\]\];', content, re.DOTALL)
+    add_data = parse_opl_2d_array(content, 'add')
+    cor_data = parse_opl_1d_array(content, 'cor')
+    con_data = parse_opl_2d_array(content, 'con')
+    con_o_data = parse_opl_3d_array(content, 'con_o')
     
-    # Parse the 'cor' array for corridors (1D array with one value per cell)
-    cor_match = re.search(r'cor = \[([\d\s]+)\];', content, re.DOTALL)
+    print(f"Parsed add: {len(add_data) if add_data else 0} rows")
+    print(f"Parsed cor: {len(cor_data) if cor_data else 0} values")
+    print(f"Parsed con: {len(con_data) if con_data else 0} rows")
+    print(f"Parsed con_o: {len(con_o_data) if con_o_data else 0} cells")
     
-    species_names = ['atelerix_algirus', 'martes_martes', 'eliomys_quercinus', 'oryctolagus_cuniculus']
-    
-    if add_match:
-        add_data = add_match.group(1)
-        # Parse each row
-        rows = re.findall(r'\[([\d\s]+)\]', add_data)
-        
-        # Initialize columns for each species action
-        action_columns = [f'action_{name}' for name in species_names]
-        
-        for col in action_columns:
-            dataset_gpd[col] = 0
-        
-        # Populate the dataframe with solution values
-        for idx, row_str in enumerate(rows):
-            if idx < len(dataset_gpd):
-                values = [int(x) for x in row_str.split()]
-                for j, col in enumerate(action_columns):
-                    if j < len(values):
-                        dataset_gpd.at[idx, col] = values[j]
-        
-        print(f"Successfully loaded 'add' array data!")
-        print(f"Added columns: {', '.join(action_columns)}")
-    else:
-        print("Could not parse 'add' array from solution file")
-    
-    if cor_match:
-        cor_data = cor_match.group(1)
-        # Parse corridor values - it's a 1D array with one value per cell
-        corridor_values = [int(x) for x in cor_data.split()]
-        
-        # Initialize corridor column
-        dataset_gpd['corridor'] = 0
-        
-        # Populate the dataframe with corridor values
-        for idx, value in enumerate(corridor_values):
-            if idx < len(dataset_gpd):
-                dataset_gpd.at[idx, 'corridor'] = value
-        
-        print(f"Successfully loaded 'cor' array data!")
-        print(f"Added corridor column with {sum(corridor_values)} cells marked as corridors")
-    else:
-        print("Could not parse 'cor' array from solution file")
-    
-    if add_match or cor_match:
-        print(f"\nDataset now has {len(dataset_gpd)} rows and {len(dataset_gpd.columns)} columns")
-        if add_match:
-            print(f"\nSample of action columns:")
-            print(dataset_gpd[action_columns].head(10))
-        if cor_match:
-            print(f"\nSample of corridor column:")
-            print(dataset_gpd['corridor'].head(10))
-        
-        # Create a summary column for cell type based on actions
-        def get_cell_type(row):
-            # Check for original populations
-            has_population = any([row[f'has_{species}'] for species in species_names])
-            
-            if cor_match and row['corridor'] == 1:
-                return 'corridor'
-            elif has_population:
-                # Check if any action is taken on this population cell
-                if add_match:
-                    actions = [row[col] for col in action_columns]
-                    if sum(actions) > 0:
-                        return 'population_with_action'
-                    else:
-                        return 'population_no_action'
-                else:
-                    return 'population_no_action'
-            elif add_match:
-                actions = [row[col] for col in action_columns]
-                if sum(actions) == 0:
-                    return 'no_action'
-                else:
-                    # Return which species have actions
-                    active_species = [species_names[i].split('_')[0] for i, val in enumerate(actions) if val == 1]
-                    return f"action: {', '.join(active_species)}"
-            return 'no_action'
-        
-        dataset_gpd['cell_type'] = dataset_gpd.apply(get_cell_type, axis=1)
-        
-        # Define color mapping
-        def get_cell_color(cell_type):
-            if cell_type == 'corridor':
-                return '#FFA500'  # Orange for corridors
-            elif cell_type == 'population_with_action':
-                return '#0066FF'  # Blue for populations with actions
-            elif cell_type == 'population_no_action':
-                return '#FF0000'  # Red for populations without actions
-            elif cell_type == 'no_action':
-                return '#E8E8E8'  # Light gray for no action
-            else:
-                return '#00CC00'  # Green for action cells
-        
-        dataset_gpd['color'] = dataset_gpd['cell_type'].apply(get_cell_color)
-        
-        # Create the map
-        print("\nCreating map visualization...")
-        map = folium.Map(
-            location=[39.97, 4.0460],
-            zoom_start=11,
-            tiles='OpenStreetMap',
-            width="90%",
-            height="90%"
-        )
-        
-        # Add cells to map
-        for idx, row in dataset_gpd.iterrows():
-            # Build tooltip with action information
-            tooltip_lines = [
-                f"Grid ID: {row['grid_id']}",
-                f"Land Cover: {row['dominant_land_cover_name']}"
-            ]
-            
-            # Add original population information
-            has_any_population = False
-            tooltip_lines.append("<br><b>Original Populations:</b>")
-            for species in species_names:
-                if row[f'has_{species}']:
-                    has_any_population = True
-                    tooltip_lines.append(f"  • {species}: YES")
-            if not has_any_population:
-                tooltip_lines.append("  None")
-            
-            if add_match:
-                tooltip_lines.append("<br><b>Actions:</b>")
-                has_any_action = False
-                for i, species in enumerate(species_names):
-                    action_val = row[action_columns[i]]
-                    if action_val == 1:
-                        has_any_action = True
-                        tooltip_lines.append(f"  • {species}: YES")
-                if not has_any_action:
-                    tooltip_lines.append("  None")
-            
-            if cor_match:
-                corridor_val = row['corridor']
-                tooltip_lines.append(f"<br><b>Corridor:</b> {'YES' if corridor_val == 1 else 'NO'}")
-            
-            tooltip_lines.append(f"<br><b>Cell Type:</b> {row['cell_type']}")
-            
-            tooltip_html = "<br>".join(tooltip_lines)
-            
-            folium.GeoJson(
-                row.geometry,
-                style_function=lambda x, color=row['color']: {
-                    'fillColor': color,
-                    'color': 'black',
-                    'weight': 0.5,
-                    'fillOpacity': 0.7
-                },
-                tooltip=tooltip_html
-            ).add_to(map)
-        
-        # Save the map
-        output_file = f"solution_map_{selected_file.replace('.dat', '.html')}"
-        map.save(output_file)
-        print(f"\nMap saved to: {output_file}")
-        print(f"Open this file in a web browser to view the solution visualization.")
-        
-        # Print summary statistics
-        print(f"\n--- Solution Summary ---")
-        if cor_match:
-            print(f"Corridor cells: {dataset_gpd['corridor'].sum()}")
-        if add_match:
-            for i, species in enumerate(species_names):
-                count = dataset_gpd[action_columns[i]].sum()
-                print(f"Actions for {species}: {count}")
-        
-        # Print population statistics
-        print(f"\n--- Population Statistics ---")
-        for species in species_names:
-            total_pop = dataset_gpd[f'has_{species}'].sum()
-            if add_match:
-                pop_with_action = dataset_gpd[dataset_gpd[f'has_{species}'] == True][f'action_{species}'].sum()
-                print(f"{species}: {total_pop} cells (with action: {pop_with_action}, without: {total_pop - pop_with_action})")
-            else:
-                print(f"{species}: {total_pop} cells")
+    return add_data, cor_data, con_data, con_o_data, selected_file
 
 
+def attach_solution_data_to_cells(ordered_cells, add_data, cor_data, con_data, 
+                                   con_o_data, species_origins):
+    """
+    Attach solution data and origin flags to cell dictionaries.
+    
+    Args:
+        ordered_cells (list): Cell dictionaries
+        add_data (list): Action data
+        cor_data (list): Corridor data
+        con_data (list): Connection data
+        con_o_data (list): Connection origin data
+        species_origins (dict): Species origins mapping
+        
+    Returns:
+        None (modifies ordered_cells in place)
+    """
+    for i, cell in enumerate(ordered_cells):
+        cell['add'] = add_data[i] if add_data and i < len(add_data) else [0] * 4
+        cell['cor'] = cor_data[i] if cor_data and i < len(cor_data) else 0
+        cell['con'] = con_data[i] if con_data and i < len(con_data) else [0] * 4
+        cell['con_o'] = con_o_data[i] if con_o_data and i < len(con_o_data) else [[0] * 24] * 4
+        
+        # Check if this cell is an origin for any species
+        cell['is_origin'] = {}
+        for species_long, origins in species_origins.items():
+            cell['is_origin'][species_long] = cell['grid_id'] in origins
 
+
+def create_solution_map(ordered_cells, grid_centroids, species_origins, output_path):
+    """
+    Create and save solution map (actions + corridors).
+    
+    Args:
+        ordered_cells (list): Cell dictionaries with solution data
+        grid_centroids (dict): Cell centroid coordinates
+        species_origins (dict): Species origins mapping
+        output_path (str): Output HTML file path
+        
+    Returns:
+        None
+    """
+    print("\nCreating solution map...")
+    solution_map = create_base_map()
+    
+    for cell in ordered_cells:
+        color, cell_type = determine_solution_cell_color(cell, species_origins)
+        cell['tooltip'] = build_solution_tooltip(cell, species_origins)
+        add_cell_to_map(solution_map, cell, color, grid_centroids, 
+                       add_neighbor_arrows=True)
+    
+    solution_map.save(output_path)
+    inject_hover_javascript(output_path)
+    print(f"Solution map saved to: {output_path}")
+
+
+def create_connection_map(ordered_cells, grid_centroids, species_origins, output_path):
+    """
+    Create and save connection map (connections + corridors + origin arrows).
+    
+    Args:
+        ordered_cells (list): Cell dictionaries with solution data
+        grid_centroids (dict): Cell centroid coordinates
+        species_origins (dict): Species origins mapping
+        output_path (str): Output HTML file path
+        
+    Returns:
+        None
+    """
+    print("\nCreating connection map...")
+    connection_map = create_base_map()
+    
+    for cell in ordered_cells:
+        color = determine_connection_cell_color(cell, species_origins)
+        cell['tooltip'] = build_connection_tooltip(cell, species_origins)
+        add_cell_to_map(connection_map, cell, color, grid_centroids, 
+                       add_neighbor_arrows=True)
+        add_connection_arrows(connection_map, cell, grid_centroids, species_origins)
+    
+    connection_map.save(output_path)
+    inject_hover_javascript(output_path)
+    print(f"Connection map saved to: {output_path}")
+
+
+def main():
+    """Main execution function."""
+    # Configuration
+    OPL_DATA_DIR = "opl_data"
+    SOLUTION_DIR = "opl_solutions"
+    OUTPUT_DIR = "html_files"
+    
+    # Load dataset
+    dataset_gpd = load_menorca_dataset()
+    
+    # Get species origins from dataset
+    species_origins = get_species_origins_from_dataset(dataset_gpd, SPECIES_FULL_NAMES)
+    
+    # Load OPL data
+    cells, species_list, neighbors_list, opl_data_file = load_and_parse_opl_data(OPL_DATA_DIR)
+    
+    # Create ordered cells with geometries
+    ordered_cells = create_ordered_cells(cells, neighbors_list, dataset_gpd)
+    
+    # Load solution
+    add_data, cor_data, con_data, con_o_data, solution_file = load_and_parse_solution(SOLUTION_DIR)
+    
+    # Attach solution data to cells
+    attach_solution_data_to_cells(ordered_cells, add_data, cor_data, 
+                                   con_data, con_o_data, species_origins)
+    
+    # Compute centroids for arrow drawing
+    grid_centroids = compute_centroids(ordered_cells)
+    
+    # Create output directory
+    ensure_directory_exists(OUTPUT_DIR)
+    
+    print("\n=== Creating Visualizations ===")
+    
+    # Create solution map
+    solution_output = os.path.join(OUTPUT_DIR, 
+                                   f"solution_map_{solution_file.replace('.dat', '.html')}")
+    create_solution_map(ordered_cells, grid_centroids, species_origins, solution_output)
+    
+    # Create connection map if connection data exists
+    if con_data:
+        connection_output = os.path.join(OUTPUT_DIR, 
+                                        f"connection_map_{solution_file.replace('.dat', '.html')}")
+        create_connection_map(ordered_cells, grid_centroids, species_origins, connection_output)
+    
+    # Print summary statistics
+    print_summary_statistics(ordered_cells, SPECIES_FULL_NAMES)
+    
+    print("\nVisualization complete!")
+
+
+if __name__ == "__main__":
+    main()
